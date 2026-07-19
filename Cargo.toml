@@ -1,10 +1,13 @@
 [package]
 name = "xorlist-rs"
 version = "0.1.0"
-description = "A doubly-linked XOR list"
 edition = "2024"
+description = "A doubly-linked XOR list"
+repository = "https://github.com/KiChjang/xorlist-rs"
+documentation = "https://docs.rs/xorlist-rs"
+readme = "README.md"
 license = "MIT OR Apache-2.0"
-keywords = ["xor", "doubly", "linked", "list", "linked-list", "doubly-linked-list"]
+keywords = ["xor", "doubly", "linked", "list", "linked-list"]
 categories = ["data-structures"]
 
 rust-version = "1.96"
