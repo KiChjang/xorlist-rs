@@ -11,8 +11,7 @@ and able to splice two lists together by moving raw storage.
 
 > [!WARNING]
 > **This crate is experimental and not ready for production use.** It is a
-> data-structure design exploration, currently at 0.1.0 and unpublished. In
-> particular:
+> data-structure design exploration, currently at 0.1.1. In particular:
 >
 > - The API is unstable and will change without notice.
 > - `CursorMut` does not yet support insertion or removal at the cursor.

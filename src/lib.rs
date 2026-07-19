@@ -928,7 +928,7 @@ impl<T> XorList<T> {
     /// assert_eq!(dl.front(), Some(&10));
     /// ```
     pub fn push_front_mut(&mut self, value: T) -> &mut T {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return self.push_empty(value);
         }
 
@@ -1002,7 +1002,7 @@ impl<T> XorList<T> {
     /// assert_eq!(dl.back(), Some(&14));
     /// ```
     pub fn push_back_mut(&mut self, value: T) -> &mut T {
-        if self.nodes.len() == 0 {
+        if self.nodes.is_empty() {
             return self.push_empty(value);
         }
 
@@ -1073,7 +1073,7 @@ impl<T> XorList<T> {
     /// assert_eq!(d.pop_front(), None);
     /// ```
     pub fn pop_front(&mut self) -> Option<T> {
-        if self.len() == 0 {
+        if self.is_empty() {
             return None;
         }
 
@@ -1112,7 +1112,7 @@ impl<T> XorList<T> {
     /// assert_eq!(d.pop_back(), None);
     /// ```
     pub fn pop_back(&mut self) -> Option<T> {
-        if self.len() == 0 {
+        if self.is_empty() {
             return None;
         }
 
@@ -1161,7 +1161,7 @@ impl<T> XorList<T> {
         let len = self.len();
         assert!(at <= len, "Cannot split off at an out-of-bounds index");
         if at == 0 {
-            return mem::replace(self, Self::new());
+            return mem::take(self);
         } else if at == len {
             return Self::new();
         }
@@ -1419,10 +1419,6 @@ impl<T: PartialEq> PartialEq for XorList<T> {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.iter().eq(other)
     }
-
-    fn ne(&self, other: &Self) -> bool {
-        self.len() != other.len() || self.iter().ne(other)
-    }
 }
 
 impl<T: PartialOrd> PartialOrd for XorList<T> {
@@ -1650,7 +1646,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     #[inline]
     fn next(&mut self) -> Option<&'a T> {
-        let curr_slot = (!Self::is_empty(&self)).then_some(self.head)?;
+        let curr_slot = (!Self::is_empty(self)).then_some(self.head)?;
         self.index += 1;
         self.rem -= 1;
         self.head = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_head);
@@ -1671,7 +1667,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        let curr_slot = (!Self::is_empty(&self)).then_some(self.tail)?;
+        let curr_slot = (!Self::is_empty(self)).then_some(self.tail)?;
         self.rem -= 1;
         self.tail = self.list.nodes[curr_slot].prev_slot(curr_slot, self.prev_tail);
         self.prev_tail = curr_slot;
