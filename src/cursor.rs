@@ -249,7 +249,7 @@ impl<'a, T> CursorMut<'a, T> {
     }
 
     /// Provides a read-only reference to the cursor's parent list.
-    /// 
+    ///
     /// The lifetime of the returned reference is bound to that of the
     /// `CursorMut`, which means it cannot outlive the `CursorMut` and that the
     /// `CursorMut` is frozen for the lifetime of the returned reference.

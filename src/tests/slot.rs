@@ -164,7 +164,10 @@ fn split_off_invalidates_handles_of_a_rebuilt_front_half() {
     let tail = list.split_off(2);
     assert_eq!(list.iter().copied().collect::<Vec<_>>(), vec![-1, 0]);
     assert_eq!(list.slot(slot), None);
-    assert_eq!(tail.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(
+        tail.iter().copied().collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5]
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "xorlist-rs"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A doubly-linked XOR list"
 repository = "https://github.com/KiChjang/xorlist-rs"

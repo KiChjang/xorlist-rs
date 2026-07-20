@@ -811,7 +811,8 @@ impl<T> XorList<T> {
             self.nodes[self.head].npx = Self::compute_npx(self.head, slot, next_idx);
         }
         self.head = slot;
-        (slot,
+        (
+            slot,
             // SAFETY: the index is either pointing to a pre-existing node, or a
             // newly created node pushed to the vector; value is also explicitly
             // assigned as Some
@@ -821,7 +822,7 @@ impl<T> XorList<T> {
                     .value
                     .as_mut()
                     .unwrap_unchecked()
-            }
+            },
         )
     }
 
@@ -901,7 +902,8 @@ impl<T> XorList<T> {
             self.nodes[self.tail].npx = Self::compute_npx(self.tail, prev_idx, slot);
         }
         self.tail = slot;
-        (slot,
+        (
+            slot,
             // SAFETY: the index is either pointing to a pre-existing node, or a
             // newly created node pushed to the vector; value is also explicitly
             // assigned as Some
@@ -911,7 +913,7 @@ impl<T> XorList<T> {
                     .value
                     .as_mut()
                     .unwrap_unchecked()
-            }
+            },
         )
     }
 
@@ -1460,7 +1462,9 @@ impl<T> Default for XorList<T> {
 
 impl<T> Extend<T> for XorList<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        iter.into_iter().for_each(move |node| { self.push_back(node); });
+        iter.into_iter().for_each(move |node| {
+            self.push_back(node);
+        });
     }
 }
 
