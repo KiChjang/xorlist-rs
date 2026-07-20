@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `CursorMut` now borrows the list directly instead of holding a raw node
+  pointer, removing all `unsafe` code from the cursors and restoring the
+  automatic `Send`/`Sync` implementations.
 - Simplified the previous-slot computation in `compact` (no behavior change).
 
 ## [0.1.1] - 2026-07-20

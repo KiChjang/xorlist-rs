@@ -212,8 +212,7 @@ pub struct CursorMut<'a, T> {
     curr_slot: usize,
     prev_slot: usize,
     index: usize,
-    ptr: *mut Node<T>,
-    _marker: PhantomData<&'a mut T>,
+    list: &'a mut XorList<T>,
 }
 
 impl<'a, T> CursorMut<'a, T> {
@@ -233,8 +232,7 @@ impl<'a, T> CursorMut<'a, T> {
             return;
         }
         let curr_slot = self.curr_slot;
-        // SAFETY: checked for end-of-list sentinel value above
-        self.curr_slot = unsafe { &*self.ptr.add(curr_slot) }.next_slot(curr_slot, self.prev_slot);
+        self.curr_slot = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_slot);
         self.prev_slot = curr_slot;
         self.index += 1;
     }
@@ -248,8 +246,7 @@ impl<'a, T> CursorMut<'a, T> {
             return;
         }
         let prev_slot = self.prev_slot;
-        // SAFETY: checked for end-of-list sentinel value above
-        self.prev_slot = unsafe { &*self.ptr.add(prev_slot) }.prev_slot(prev_slot, self.curr_slot);
+        self.prev_slot = self.list.nodes[prev_slot].prev_slot(prev_slot, self.curr_slot);
         self.curr_slot = prev_slot;
         self.index -= 1;
     }
@@ -258,18 +255,16 @@ impl<'a, T> CursorMut<'a, T> {
     /// `None` if the cursor is on the ghost non-element.
     #[must_use]
     pub fn current(&mut self) -> Option<&mut T> {
-        let offset = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        // SAFETY: checked for end-of-list sentinel value above
-        unsafe { &mut *self.ptr.add(offset) }.value.as_mut()
+        let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
+        self.list.nodes.get_mut(curr_slot)?.value.as_mut()
     }
 
-    // Note that for this function, the returned reference is tied to the
-    // underlying list's lifetime and not the cursor, so care must be taken
-    // not to call current_node twice on the same node
-    unsafe fn current_node(&mut self) -> Option<&'a mut Node<T>> {
-        let offset = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        // SAFETY: checked for end-of-list sentinel value above
-        Some(unsafe { &mut *self.ptr.add(offset) })
+    fn current_node(&mut self) -> Option<(&mut Node<T>, usize)> {
+        let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
+        self.list
+            .nodes
+            .get_mut(curr_slot)
+            .map(|node| (node, self.index))
     }
 
     /// Returns a mutable reference to the element after the cursor, or
@@ -277,20 +272,18 @@ impl<'a, T> CursorMut<'a, T> {
     /// non-element.
     pub fn peek_next(&mut self) -> Option<&mut T> {
         let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        let offset = unsafe { &*self.ptr.add(curr_slot) }.next_slot(curr_slot, self.prev_slot);
-        if offset == usize::MAX {
+        let next_slot = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_slot);
+        if next_slot == usize::MAX {
             return None;
         }
-        // SAFETY: checked for end-of-list sentinel value above
-        unsafe { &mut *self.ptr.add(offset) }.value.as_mut()
+        self.list.nodes.get_mut(next_slot)?.value.as_mut()
     }
 
     /// Returns a mutable reference to the element before the cursor, or
     /// `None` if the cursor is on the front element.
     pub fn peek_prev(&mut self) -> Option<&mut T> {
-        let offset = (self.prev_slot != usize::MAX).then_some(self.prev_slot)?;
-        // SAFETY: checked for end-of-list sentinel value above
-        unsafe { &mut *self.ptr.add(offset) }.value.as_mut()
+        let prev_slot = (self.prev_slot != usize::MAX).then_some(self.prev_slot)?;
+        self.list.nodes.get_mut(prev_slot)?.value.as_mut()
     }
 }
 
@@ -816,8 +809,7 @@ impl<T> XorList<T> {
             curr_slot: self.head,
             prev_slot: usize::MAX,
             index: 0,
-            ptr: self.nodes.as_mut_ptr(),
-            _marker: PhantomData,
+            list: self,
         }
     }
 
@@ -884,8 +876,7 @@ impl<T> XorList<T> {
             curr_slot: self.tail,
             prev_slot,
             index: self.len().saturating_sub(1),
-            ptr: self.nodes.as_mut_ptr(),
-            _marker: PhantomData,
+            list: self,
         }
     }
 
@@ -1314,8 +1305,11 @@ impl<T> XorList<T> {
     /// Repacks the backing buffer so that the slots lie in traversal order,
     /// discarding the dirty slots left behind by removals.
     ///
-    /// The elements themselves are unaffected. This is a no-op when no
-    /// slots are dirty; otherwise it should compute in *O*(*n*) time.
+    /// The elements themselves are unaffected. The buffer is rebuilt even
+    /// when no slots are dirty, so this reliably relinearizes a scattered
+    /// slot layout (such as one built with
+    /// [`push_front`](Self::push_front)). This operation should compute in
+    /// *O*(*n*) time.
     ///
     /// # Examples
     ///
@@ -1342,20 +1336,17 @@ impl<T> XorList<T> {
             return;
         }
         let len = self.len();
-        let mut nodes = Vec::new();
+        let mut nodes = Vec::with_capacity(len);
         let mut cursor = self.cursor_front_mut();
 
-        // SAFETY: The cursor always advances with the call to move_next() in
-        // every iteration, therefore current_node() must return a
-        // reference to a different node
-        while let Some(node) = unsafe { cursor.current_node() } {
-            let prev = cursor.index.wrapping_sub(1);
-            let next = if cursor.index == len - 1 {
+        while let Some((node, index)) = cursor.current_node() {
+            let prev = index.wrapping_sub(1);
+            let next = if index == len - 1 {
                 usize::MAX
             } else {
-                cursor.index + 1
+                index + 1
             };
-            let npx = Self::compute_npx(cursor.index, prev, next);
+            let npx = Self::compute_npx(index, prev, next);
             let value = node.value.take();
             nodes.push(Node { value, npx });
             cursor.move_next();
