@@ -6,5 +6,6 @@ mod cursor;
 mod index;
 mod iterator;
 mod model;
+mod slot;
 mod splice;
 mod traits;

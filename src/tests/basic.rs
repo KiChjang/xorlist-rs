@@ -234,11 +234,11 @@ fn contains_works() {
 fn push_mut_returns_usable_reference() {
     let mut list = XorList::new();
 
-    let front = list.push_front_mut(1i32);
+    let (_, front) = list.push_front_mut(1i32);
     *front += 10;
-    let back = list.push_back_mut(2);
+    let (_, back) = list.push_back_mut(2);
     *back += 20;
-    let front = list.push_front_mut(3);
+    let (_, front) = list.push_front_mut(3);
     *front += 30;
 
     assert_eq!(list.iter().copied().collect::<Vec<_>>(), vec![33, 11, 22]);

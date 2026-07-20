@@ -34,7 +34,7 @@ npx = (prev.wrapping_sub(curr)) ^ (next.wrapping_sub(curr))
 
 Traversal recovers one neighbor from the other — arriving from `prev`, the
 next slot is `(npx ^ (prev - curr)) + curr` — so iterators and cursors walk
-the list carrying a pair of adjacent slot indices.
+the list carrying a pair of adjacent slots.
 
 Because only *offsets* are encoded, a run of interior nodes remains valid when
 the whole run is relocated by a constant amount. `append` exploits this: it
@@ -43,7 +43,7 @@ rewriting only the three links at the seam instead of fixing up every node.
 
 ### A `Vec` as the backing store
 
-All nodes live in slots of one backing `Vec`, and links name slot indices
+All nodes live in slots of one backing `Vec`, and links name slots
 rather than addresses:  pushes fill the `Vec` left to right while the XOR
 links define the logical order on top of it. Removing a node from the middle
 poses a problem: shifting or swapping the remaining nodes would invalidate the
@@ -52,6 +52,12 @@ anything. The vacated slot is unlinked, marked dirty, and left in place;
 subsequent pushes pop a dirty slot and construct the new node there, growing
 the `Vec` only when no dirty slot is available. `compact()` rebuilds the
 buffer in traversal order when you want to shed the accumulated dirty slots.
+
+Since a node stays in its slot for as long as its element lives, the slot
+doubles as a stable handle: pushes return the slot they filled, and
+`slot()` / `slot_mut()` turn a saved slot back into the element in *O*(1)
+with no traversal. This makes patterns like an LRU cache practical — keep a
+map from key to slot, with the recency order in the list.
 
 ## Example
 
@@ -85,7 +91,10 @@ the usual trait impls (`Clone`, `Default`, `Debug`, `Extend`, `FromIterator`,
 
 On top of that:
 
-- `push_front_mut` / `push_back_mut` — push and get `&mut` to the new element
+- `push_front_mut` / `push_back_mut` — push and get the slot plus `&mut`
+  to the new element (the plain pushes return just the slot)
+- `slot` / `slot_mut` / `slot_unchecked` / `slot_unchecked_mut` — *O*(1)
+  access through a slot returned by a push, no traversal
 - `get` / `get_mut` / `get_unchecked` / `get_unchecked_mut` — positional
   access that walks from the nearer end
 - `Cursor` / `CursorMut` — seekable cursors (`cursor_front`, `cursor_back`,
@@ -101,6 +110,7 @@ On top of that:
 | `push_front` / `push_back` | amortized *O*(1) |
 | `pop_front` / `pop_back` | *O*(1) |
 | `front` / `back`, `len`, `is_empty` | *O*(1) |
+| `slot(at)` / `slot_mut(at)` | *O*(1) |
 | `get(at)` / `get_mut(at)` | *O*(min(`at`, *n* − `at`)) |
 | `split_off(at)` | *O*(min(`at`, *n* − `at`)) |
 | `append` | 3 link rewrites + one bulk buffer move |
@@ -109,9 +119,9 @@ On top of that:
 ## Planned features
 
 - [ ] **Cursor mutation** — `insert_after` / `insert_before`, `remove_current`,
-  and `split_after` / `split_before` on `CursorMut`. This needs `CursorMut`
-  to borrow the list itself rather than a raw node pointer, since insertion
-  can reallocate the backing `Vec`.
+  and `split_after` / `split_before` on `CursorMut`. The groundwork is done:
+  `CursorMut` now borrows the list itself rather than a raw node pointer, so
+  insertion is free to reallocate the backing `Vec`.
 - [ ] **Element-wise operations** — `retain` / `retain_mut` (a natural fit for
   the dirty-slot design) and positional `insert(at, value)` / `remove(at)`.
 - [ ] **Capacity management** — `with_capacity`, `capacity`, `reserve`, and
@@ -120,9 +130,10 @@ On top of that:
   builds the whole list in one pass with position-derived links, since the
   values are already in logical order.
 - [ ] **Indexing** — `Index` / `IndexMut` delegating to `get` / `get_mut`.
-- [ ] **`Send` / `Sync` for `IterMut` and `CursorMut`** — both hold a raw
-  pointer today and so lose the auto-impls, even though they are morally
-  `&mut`-like; explicit impls where `T: Send` / `T: Sync` are planned.
+- [ ] **`Send` / `Sync` for `IterMut`** — `CursorMut` regained the auto-impls
+  when it switched to borrowing the list, but `IterMut` still holds a raw
+  pointer (it must, to hand out references that outlive `&mut self`) and so
+  needs explicit impls where `T: Send` / `T: Sync`.
 - [ ] **`serde` support** (feature-gated) — the `Vec`-backed layout means a list
   serializes as one self-contained unit, independent of any other list.
 - [ ] **Swappable backing store** — generalizing the container over its storage

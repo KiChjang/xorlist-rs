@@ -15,9 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `XorList::is_linear`, an allocation-free check for whether the backing
   buffer already lies in traversal order, letting callers skip `compact`'s
   now-unconditional rebuild.
+- A slot-handle API for *O*(1) element access without traversal:
+  `XorList::slot` / `slot_mut` resolve a slot to its element, with
+  `unsafe` `slot_unchecked` / `slot_unchecked_mut` variants, and
+  `Cursor::slot` / `CursorMut::slot` report the slot under the cursor.
+  Slots act as stable handles — an element keeps its slot for as long as
+  it lives — enabling patterns like an LRU cache that maps keys to slots.
+  The stability rules (dirty-slot reuse, and which operations renumber
+  the buffer) are documented in a new "Slots" section on `XorList`.
 
 ### Changed
 
+- **Breaking:** `push_front` and `push_back` now return the slot of the
+  new element (previously `()`), and `push_front_mut` / `push_back_mut`
+  return `(usize, &mut T)` (previously `&mut T`).
 - `compact` now rebuilds the buffer unconditionally instead of returning
   early when no slots are dirty, so it reliably relinearizes a scattered
   slot layout. Calling it on an already-linear list is now *O*(*n*) rather
@@ -25,7 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CursorMut` now borrows the list directly instead of holding a raw node
   pointer, removing all `unsafe` code from the cursors and restoring the
   automatic `Send`/`Sync` implementations.
-- Simplified the previous-slot computation in `compact` (no behavior change).
 
 ## [0.1.1] - 2026-07-20
 

@@ -16,7 +16,7 @@
 //! traversed equally cheaply in either direction.
 //!
 //! Rather than giving each node its own heap allocation, all nodes live in
-//! slots of one backing `Vec`, and links name slot indices instead of
+//! slots of one backing `Vec`, and links name slots instead of
 //! addresses — pushes fill the `Vec` left to right, while the XOR links
 //! define the logical order on top of it. This raises the question of what
 //! to do when a node is removed from the middle of the `Vec`: shifting or
@@ -27,6 +27,15 @@
 //! when no dirty slot is available, so removal never disturbs other nodes
 //! and the capacity is recycled. [`XorList::compact`] rebuilds the buffer
 //! in traversal order to shed accumulated dirty slots.
+//!
+//! Because a node stays in its slot for as long as its element lives, the
+//! slot doubles as a stable *handle* to the element. Pushes return the
+//! slot they filled, and [`XorList::slot`] / [`XorList::slot_mut`] turn a
+//! saved slot back into the element in *O*(1) — no traversal — which is
+//! what makes patterns like an LRU cache (a map from key to slot, with
+//! the recency order kept in the list) practical. See the
+//! [slots](XorList#slots) section on [`XorList`] for the rules on when a
+//! slot stays valid.
 //!
 //! # Examples
 //!
@@ -44,10 +53,12 @@
 
 #![warn(missing_docs)]
 
-use core::{cmp, fmt, hash, iter::FusedIterator, marker::PhantomData, mem};
-
+pub mod cursor;
 #[cfg(test)]
 mod tests;
+
+use core::{cmp, fmt, hash, iter::FusedIterator, marker::PhantomData, mem};
+pub use cursor::{Cursor, CursorMut};
 
 #[derive(Debug, Eq)]
 struct Node<T> {
@@ -85,208 +96,6 @@ impl<T: Ord> Ord for Node<T> {
     }
 }
 
-/// A cursor over a [`XorList`] with read-only access.
-///
-/// A `Cursor` is like an iterator, except that it can freely seek back and
-/// forth.
-///
-/// The cursor rests *on* an element rather than between two. Stepping past
-/// the back of the list parks it on a "ghost" non-element, where
-/// [`current`](Self::current) and [`index`](Self::index) return `None`; the
-/// cursor for an empty list starts there.
-///
-/// Cursors are created with [`XorList::cursor_front`],
-/// [`XorList::cursor_back`], [`Iter::cursor_front`], and
-/// [`Iter::cursor_back`].
-#[derive(Clone, Debug)]
-pub struct Cursor<'a, T> {
-    curr_slot: usize,
-    prev_slot: usize,
-    index: usize,
-    list: &'a XorList<T>,
-}
-
-impl<'a, T> Cursor<'a, T> {
-    /// Returns the cursor's position within the list, or `None` if the
-    /// cursor is on the ghost non-element.
-    #[must_use]
-    pub fn index(&self) -> Option<usize> {
-        (self.curr_slot != usize::MAX).then_some(self.index)
-    }
-
-    /// Moves the cursor to the next element of the list.
-    ///
-    /// If the cursor is on the last element, this moves it onto the ghost
-    /// non-element; on the ghost it does nothing.
-    pub fn move_next(&mut self) {
-        if self.curr_slot == usize::MAX {
-            return;
-        }
-        let curr_slot = self.curr_slot;
-        self.curr_slot = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_slot);
-        self.prev_slot = curr_slot;
-        self.index += 1;
-    }
-
-    /// Moves the cursor to the previous element of the list.
-    ///
-    /// If the cursor is on the ghost non-element, this moves it back to the
-    /// last element; on the front element it does nothing.
-    pub fn move_prev(&mut self) {
-        if self.prev_slot == usize::MAX {
-            return;
-        }
-        let prev_slot = self.prev_slot;
-        self.prev_slot = self.list.nodes[prev_slot].prev_slot(prev_slot, self.curr_slot);
-        self.curr_slot = prev_slot;
-        self.index -= 1;
-    }
-
-    /// Returns a reference to the element the cursor is on, or `None` if
-    /// the cursor is on the ghost non-element.
-    #[must_use]
-    pub fn current(&self) -> Option<&'a T> {
-        self.list
-            .nodes
-            .get(self.curr_slot)
-            .and_then(|node| node.value.as_ref())
-    }
-
-    /// Returns a reference to the element after the cursor, or `None` if
-    /// the cursor is on the last element or on the ghost non-element.
-    pub fn peek_next(&self) -> Option<&'a T> {
-        let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        let next_slot = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_slot);
-        self.list
-            .nodes
-            .get(next_slot)
-            .and_then(|node| node.value.as_ref())
-    }
-
-    /// Returns a reference to the element before the cursor, or `None` if
-    /// the cursor is on the front element.
-    pub fn peek_prev(&self) -> Option<&'a T> {
-        let prev_slot = (self.prev_slot != usize::MAX).then_some(self.prev_slot)?;
-        self.list
-            .nodes
-            .get(prev_slot)
-            .and_then(|node| node.value.as_ref())
-    }
-
-    /// Provides a reference to the front element of the underlying list, or
-    /// `None` if the list is empty.
-    #[must_use]
-    pub fn front(&self) -> Option<&'a T> {
-        self.list.front()
-    }
-
-    /// Provides a reference to the back element of the underlying list, or
-    /// `None` if the list is empty.
-    #[must_use]
-    pub fn back(&self) -> Option<&'a T> {
-        self.list.back()
-    }
-
-    /// Provides a read-only reference to the underlying list.
-    #[must_use]
-    #[inline(always)]
-    pub fn as_list(&self) -> &'a XorList<T> {
-        self.list
-    }
-}
-
-/// A cursor over a [`XorList`] with editing access to the elements.
-///
-/// A `CursorMut` is like a mutable iterator, except that it can freely seek
-/// back and forth.
-///
-/// The cursor rests *on* an element rather than between two. Stepping past
-/// the back of the list parks it on a "ghost" non-element, where
-/// [`current`](Self::current) and [`index`](Self::index) return `None`; the
-/// cursor for an empty list starts there.
-///
-/// Cursors are created with [`XorList::cursor_front_mut`] and
-/// [`XorList::cursor_back_mut`].
-#[derive(Debug)]
-pub struct CursorMut<'a, T> {
-    curr_slot: usize,
-    prev_slot: usize,
-    index: usize,
-    list: &'a mut XorList<T>,
-}
-
-impl<'a, T> CursorMut<'a, T> {
-    /// Returns the cursor's position within the list, or `None` if the
-    /// cursor is on the ghost non-element.
-    #[must_use]
-    pub fn index(&self) -> Option<usize> {
-        (self.curr_slot != usize::MAX).then_some(self.index)
-    }
-
-    /// Moves the cursor to the next element of the list.
-    ///
-    /// If the cursor is on the last element, this moves it onto the ghost
-    /// non-element; on the ghost it does nothing.
-    pub fn move_next(&mut self) {
-        if self.curr_slot == usize::MAX {
-            return;
-        }
-        let curr_slot = self.curr_slot;
-        self.curr_slot = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_slot);
-        self.prev_slot = curr_slot;
-        self.index += 1;
-    }
-
-    /// Moves the cursor to the previous element of the list.
-    ///
-    /// If the cursor is on the ghost non-element, this moves it back to the
-    /// last element; on the front element it does nothing.
-    pub fn move_prev(&mut self) {
-        if self.prev_slot == usize::MAX {
-            return;
-        }
-        let prev_slot = self.prev_slot;
-        self.prev_slot = self.list.nodes[prev_slot].prev_slot(prev_slot, self.curr_slot);
-        self.curr_slot = prev_slot;
-        self.index -= 1;
-    }
-
-    /// Returns a mutable reference to the element the cursor is on, or
-    /// `None` if the cursor is on the ghost non-element.
-    #[must_use]
-    pub fn current(&mut self) -> Option<&mut T> {
-        let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        self.list.nodes.get_mut(curr_slot)?.value.as_mut()
-    }
-
-    fn current_node(&mut self) -> Option<(&mut Node<T>, usize)> {
-        let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        self.list
-            .nodes
-            .get_mut(curr_slot)
-            .map(|node| (node, self.index))
-    }
-
-    /// Returns a mutable reference to the element after the cursor, or
-    /// `None` if the cursor is on the last element or on the ghost
-    /// non-element.
-    pub fn peek_next(&mut self) -> Option<&mut T> {
-        let curr_slot = (self.curr_slot != usize::MAX).then_some(self.curr_slot)?;
-        let next_slot = self.list.nodes[curr_slot].next_slot(curr_slot, self.prev_slot);
-        if next_slot == usize::MAX {
-            return None;
-        }
-        self.list.nodes.get_mut(next_slot)?.value.as_mut()
-    }
-
-    /// Returns a mutable reference to the element before the cursor, or
-    /// `None` if the cursor is on the front element.
-    pub fn peek_prev(&mut self) -> Option<&mut T> {
-        let prev_slot = (self.prev_slot != usize::MAX).then_some(self.prev_slot)?;
-        self.list.nodes.get_mut(prev_slot)?.value.as_mut()
-    }
-}
-
 /// A doubly-linked list with XOR-compressed links, backed by a single
 /// contiguous buffer.
 ///
@@ -306,6 +115,41 @@ impl<'a, T> CursorMut<'a, T> {
 /// ```
 ///
 /// See the [crate-level documentation](crate) for how the links are encoded.
+///
+/// # Slots
+///
+/// Every element occupies one *slot* of the backing buffer, named by a
+/// `usize`. [`push_front`](Self::push_front) and
+/// [`push_back`](Self::push_back) (and their `_mut` variants) return the
+/// slot they stored the element in, and [`slot`](Self::slot) /
+/// [`slot_mut`](Self::slot_mut) resolve a saved slot back to the element
+/// in *O*(1) time, without walking the list. A slot is therefore a
+/// lightweight handle: e.g. an LRU cache can keep a map from key to slot
+/// alongside the list and touch any entry in constant time.
+///
+/// Slot handles obey the following stability rules:
+///
+/// - A slot stays valid, and keeps naming the same element, for as long as
+///   that element remains in the list. Pushing and popping *other*
+///   elements never moves a node between slots, even when the buffer grows.
+/// - Removing an element marks its slot dirty. While the slot is dirty,
+///   [`slot`](Self::slot) returns `None` — but a later push **reuses** the
+///   slot, after which a stale handle silently resolves to the new
+///   occupant. The list does not detect stale handles; discard a slot when
+///   its element is removed.
+/// - Operations that rebuild or move the buffer renumber slots wholesale
+///   and invalidate every outstanding handle: [`compact`](Self::compact)
+///   (all slots), [`split_off`](Self::split_off) (slots in either half),
+///   [`append`](Self::append) (slots in `other`; slots in `self` survive),
+///   and [`clear`](Self::clear). An invalidated slot is never dangling in
+///   the memory-safety sense — resolving it just yields `None` or a
+///   different element.
+///
+/// Slots are unrelated to *logical* indices: [`get`](Self::get) takes the
+/// element's position in traversal order, while [`slot`](Self::slot) takes
+/// a position in the buffer. The two coincide only when the buffer
+/// [is linear](Self::is_linear). Mixing them up is not caught by the API,
+/// so keep the two kinds of `usize` apart.
 #[derive(Eq)]
 pub struct XorList<T> {
     nodes: Vec<Node<T>>,
@@ -491,7 +335,9 @@ impl<T> XorList<T> {
     /// Removes all elements from the `XorList`.
     ///
     /// The backing buffer is kept, and its slots are reused by subsequent
-    /// pushes.
+    /// pushes, so outstanding [slots](Self#slots) are invalidated: a saved
+    /// slot resolves to `None` until it is reused, and to the new occupant
+    /// afterwards.
     ///
     /// This operation should compute in *O*(*n*) time.
     ///
@@ -550,6 +396,10 @@ impl<T> XorList<T> {
     /// Provides a reference to the element at the given index, or `None` if
     /// `at` is out of bounds.
     ///
+    /// `at` is a position in traversal order, not a [slot](Self#slots);
+    /// for *O*(1) access through a slot returned by a push, see
+    /// [`slot`](Self::slot).
+    ///
     /// The list is walked from whichever end is closer to `at`, so this
     /// operation should compute in *O*(min(`at`, *n* − `at`)) time.
     ///
@@ -579,6 +429,10 @@ impl<T> XorList<T> {
 
     /// Provides a mutable reference to the element at the given index, or
     /// `None` if `at` is out of bounds.
+    ///
+    /// `at` is a position in traversal order, not a [slot](Self#slots);
+    /// for *O*(1) access through a slot returned by a push, see
+    /// [`slot_mut`](Self::slot_mut).
     ///
     /// The list is walked from whichever end is closer to `at`, so this
     /// operation should compute in *O*(min(`at`, *n* − `at`)) time.
@@ -882,6 +736,12 @@ impl<T> XorList<T> {
 
     /// Adds an element to the front of the list.
     ///
+    /// Returns the slot the element was stored in, which can later be
+    /// passed to [`slot`](Self::slot) or [`slot_mut`](Self::slot_mut) for
+    /// *O*(1) access to the element; see the [slots](Self#slots) section
+    /// for how long the slot stays valid. The returned slot may be freely
+    /// discarded.
+    ///
     /// This operation should compute in amortized *O*(1) time.
     ///
     /// # Examples
@@ -894,16 +754,22 @@ impl<T> XorList<T> {
     /// dl.push_front(2);
     /// assert_eq!(dl.front().unwrap(), &2);
     ///
-    /// dl.push_front(1);
+    /// let slot = dl.push_front(1);
     /// assert_eq!(dl.front().unwrap(), &1);
+    /// assert_eq!(dl.slot(slot), Some(&1));
     /// ```
     #[inline]
-    pub fn push_front(&mut self, value: T) {
-        let _ = self.push_front_mut(value);
+    pub fn push_front(&mut self, value: T) -> usize {
+        let (slot, _) = self.push_front_mut(value);
+        slot
     }
 
-    /// Adds an element to the front of the list, returning a mutable
-    /// reference to it.
+    /// Adds an element to the front of the list, returning the slot it was
+    /// stored in along with a mutable reference to it.
+    ///
+    /// The slot can later be passed to [`slot`](Self::slot) or
+    /// [`slot_mut`](Self::slot_mut) for *O*(1) access to the element; see
+    /// the [slots](Self#slots) section for how long the slot stays valid.
     ///
     /// This operation should compute in amortized *O*(1) time.
     ///
@@ -914,16 +780,17 @@ impl<T> XorList<T> {
     ///
     /// let mut dl: XorList<u32> = (1..=3).collect();
     ///
-    /// let front = dl.push_front_mut(0);
+    /// let (slot, front) = dl.push_front_mut(0);
     /// *front += 10;
     /// assert_eq!(dl.front(), Some(&10));
+    /// assert_eq!(dl.slot(slot), Some(&10));
     /// ```
-    pub fn push_front_mut(&mut self, value: T) -> &mut T {
+    pub fn push_front_mut(&mut self, value: T) -> (usize, &mut T) {
         if self.nodes.is_empty() {
-            return self.push_empty(value);
+            return (0, self.push_empty(value));
         }
 
-        let idx = if let Some(idx) = self.dirty.pop() {
+        let slot = if let Some(idx) = self.dirty.pop() {
             self.nodes[idx].value = Some(value);
             self.nodes[idx].npx = Self::compute_npx(idx, usize::MAX, self.head);
             idx
@@ -938,25 +805,33 @@ impl<T> XorList<T> {
         if self.head == usize::MAX {
             // The list was empty prior to the push, make the tail point to
             // the added element as well
-            self.tail = idx;
+            self.tail = slot;
         } else {
             let next_idx = self.nodes[self.head].next_slot(self.head, usize::MAX);
-            self.nodes[self.head].npx = Self::compute_npx(self.head, idx, next_idx);
+            self.nodes[self.head].npx = Self::compute_npx(self.head, slot, next_idx);
         }
-        self.head = idx;
-        // SAFETY: the index is either pointing to a pre-existing node, or a
-        // newly created node pushed to the vector; value is also explicitly
-        // assigned as Some
-        unsafe {
-            self.nodes
-                .get_unchecked_mut(idx)
-                .value
-                .as_mut()
-                .unwrap_unchecked()
-        }
+        self.head = slot;
+        (slot,
+            // SAFETY: the index is either pointing to a pre-existing node, or a
+            // newly created node pushed to the vector; value is also explicitly
+            // assigned as Some
+            unsafe {
+                self.nodes
+                    .get_unchecked_mut(slot)
+                    .value
+                    .as_mut()
+                    .unwrap_unchecked()
+            }
+        )
     }
 
     /// Appends an element to the back of the list.
+    ///
+    /// Returns the slot the element was stored in, which can later be
+    /// passed to [`slot`](Self::slot) or [`slot_mut`](Self::slot_mut) for
+    /// *O*(1) access to the element; see the [slots](Self#slots) section
+    /// for how long the slot stays valid. The returned slot may be freely
+    /// discarded.
     ///
     /// This operation should compute in amortized *O*(1) time.
     ///
@@ -968,16 +843,22 @@ impl<T> XorList<T> {
     /// let mut dl = XorList::new();
     ///
     /// dl.push_back(2);
-    /// dl.push_back(3);
+    /// let slot = dl.push_back(3);
     /// assert_eq!(3, *dl.back().unwrap());
+    /// assert_eq!(dl.slot(slot), Some(&3));
     /// ```
     #[inline]
-    pub fn push_back(&mut self, value: T) {
-        let _ = self.push_back_mut(value);
+    pub fn push_back(&mut self, value: T) -> usize {
+        let (slot, _) = self.push_back_mut(value);
+        slot
     }
 
-    /// Appends an element to the back of the list, returning a mutable
-    /// reference to it.
+    /// Appends an element to the back of the list, returning the slot it
+    /// was stored in along with a mutable reference to it.
+    ///
+    /// The slot can later be passed to [`slot`](Self::slot) or
+    /// [`slot_mut`](Self::slot_mut) for *O*(1) access to the element; see
+    /// the [slots](Self#slots) section for how long the slot stays valid.
     ///
     /// This operation should compute in amortized *O*(1) time.
     ///
@@ -988,16 +869,17 @@ impl<T> XorList<T> {
     ///
     /// let mut dl: XorList<u32> = (1..=3).collect();
     ///
-    /// let back = dl.push_back_mut(4);
+    /// let (slot, back) = dl.push_back_mut(4);
     /// *back += 10;
     /// assert_eq!(dl.back(), Some(&14));
+    /// assert_eq!(dl.slot(slot), Some(&14));
     /// ```
-    pub fn push_back_mut(&mut self, value: T) -> &mut T {
+    pub fn push_back_mut(&mut self, value: T) -> (usize, &mut T) {
         if self.nodes.is_empty() {
-            return self.push_empty(value);
+            return (0, self.push_empty(value));
         }
 
-        let idx = if let Some(idx) = self.dirty.pop() {
+        let slot = if let Some(idx) = self.dirty.pop() {
             self.nodes[idx].value = Some(value);
             self.nodes[idx].npx = Self::compute_npx(idx, self.tail, usize::MAX);
             idx
@@ -1013,22 +895,24 @@ impl<T> XorList<T> {
         if self.tail == usize::MAX {
             // The list was empty prior to the push, make the head point to
             // the added element as well
-            self.head = idx;
+            self.head = slot;
         } else {
             let prev_idx = self.nodes[self.tail].prev_slot(self.tail, usize::MAX);
-            self.nodes[self.tail].npx = Self::compute_npx(self.tail, prev_idx, idx);
+            self.nodes[self.tail].npx = Self::compute_npx(self.tail, prev_idx, slot);
         }
-        self.tail = idx;
-        // SAFETY: the index is either pointing to a pre-existing node, or a
-        // newly created node pushed to the vector; value is also explicitly
-        // assigned as Some
-        unsafe {
-            self.nodes
-                .get_unchecked_mut(idx)
-                .value
-                .as_mut()
-                .unwrap_unchecked()
-        }
+        self.tail = slot;
+        (slot,
+            // SAFETY: the index is either pointing to a pre-existing node, or a
+            // newly created node pushed to the vector; value is also explicitly
+            // assigned as Some
+            unsafe {
+                self.nodes
+                    .get_unchecked_mut(slot)
+                    .value
+                    .as_mut()
+                    .unwrap_unchecked()
+            }
+        )
     }
 
     fn push_empty(&mut self, value: T) -> &mut T {
@@ -1126,6 +1010,9 @@ impl<T> XorList<T> {
     /// The split point is located from whichever end is closer, and the
     /// shorter of the two halves is moved into fresh storage, so this
     /// operation should compute in *O*(min(`at`, *n* − `at`)) time.
+    ///
+    /// Because either half may be the one that is rebuilt, outstanding
+    /// [slots](Self#slots) in **both** halves are invalidated by a split.
     ///
     /// # Panics
     ///
@@ -1246,6 +1133,10 @@ impl<T> XorList<T> {
     /// rewritten and no per-node fix-ups are needed, though moving the
     /// buffer itself is *O*(*m*) in `other`'s slot count.
     ///
+    /// [Slots](Self#slots) in `self` remain valid; the moved elements land
+    /// in new slots, so slots previously obtained from `other` are
+    /// invalidated.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1302,6 +1193,160 @@ impl<T> XorList<T> {
         other.tail = usize::MAX;
     }
 
+    pub(crate) const fn compute_npx(curr: usize, prev: usize, next: usize) -> usize {
+        prev.wrapping_sub(curr) ^ next.wrapping_sub(curr)
+    }
+
+    // --- Methods related to the backing storage of the list ---
+
+    /// Provides a reference to the element stored in the given slot of the
+    /// backing buffer, or `None` if the slot is out of bounds or dirty.
+    ///
+    /// `at` is a slot — a handle returned by
+    /// [`push_front`](Self::push_front), [`push_back`](Self::push_back), or
+    /// their `_mut` variants — **not** a position in traversal order (for
+    /// that, see [`get`](Self::get)). See the [slots](Self#slots) section
+    /// for how long a slot stays valid; in particular, a stale handle
+    /// whose slot has been reused resolves to the new occupant with no
+    /// error.
+    ///
+    /// This operation computes in *O*(1) time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    ///
+    /// let mut list: XorList<u32> = (0..100).collect();
+    /// let slot = list.push_back(100);
+    ///
+    /// // No traversal: the handle goes straight to the element
+    /// assert_eq!(list.slot(slot), Some(&100));
+    ///
+    /// assert_eq!(list.pop_back(), Some(100));
+    /// // The slot is now dirty
+    /// assert_eq!(list.slot(slot), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn slot(&self, at: usize) -> Option<&T> {
+        self.nodes.get(at).and_then(|node| node.value.as_ref())
+    }
+
+    /// Provides a mutable reference to the element stored in the given slot
+    /// of the backing buffer, or `None` if the slot is out of bounds or
+    /// dirty.
+    ///
+    /// `at` is a slot — a handle returned by
+    /// [`push_front`](Self::push_front), [`push_back`](Self::push_back), or
+    /// their `_mut` variants — **not** a position in traversal order (for
+    /// that, see [`get_mut`](Self::get_mut)). See the
+    /// [slots](Self#slots) section for how long a slot stays valid; in
+    /// particular, a stale handle whose slot has been reused resolves to
+    /// the new occupant with no error.
+    ///
+    /// This operation computes in *O*(1) time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    ///
+    /// let mut list: XorList<u32> = (1..=3).collect();
+    /// let slot = list.push_front(0);
+    ///
+    /// *list.slot_mut(slot).unwrap() += 10;
+    /// assert_eq!(list.front(), Some(&10));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn slot_mut(&mut self, at: usize) -> Option<&mut T> {
+        self.nodes.get_mut(at).and_then(|node| node.value.as_mut())
+    }
+
+    /// Provides a reference to the element stored in the given slot of the
+    /// backing buffer, without checking that the slot holds one.
+    ///
+    /// For a safe alternative, see [`slot`](Self::slot).
+    ///
+    /// This operation computes in *O*(1) time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `at` is outside the backing buffer. Note that panicking on
+    /// an in-bounds dirty slot is *not* guaranteed — that is undefined
+    /// behavior instead.
+    ///
+    /// # Safety
+    ///
+    /// `at` must be an occupied slot: one obtained from a push whose
+    /// element has not since been removed, with no intervening operation
+    /// that renumbers slots (see the [slots](Self#slots) section). Calling
+    /// this with a dirty slot is *[undefined behavior]* even if the
+    /// resulting reference is not used.
+    ///
+    /// [undefined behavior]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    ///
+    /// let mut list: XorList<u32> = (1..=3).collect();
+    /// let slot = list.push_back(4);
+    ///
+    /// // SAFETY: the element in `slot` has not been removed
+    /// assert_eq!(unsafe { list.slot_unchecked(slot) }, &4);
+    /// ```
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub unsafe fn slot_unchecked(&self, at: usize) -> &T {
+        unsafe { self.nodes[at].value.as_ref().unwrap_unchecked() }
+    }
+
+    /// Provides a mutable reference to the element stored in the given slot
+    /// of the backing buffer, without checking that the slot holds one.
+    ///
+    /// For a safe alternative, see [`slot_mut`](Self::slot_mut).
+    ///
+    /// This operation computes in *O*(1) time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `at` is outside the backing buffer. Note that panicking on
+    /// an in-bounds dirty slot is *not* guaranteed — that is undefined
+    /// behavior instead.
+    ///
+    /// # Safety
+    ///
+    /// `at` must be an occupied slot: one obtained from a push whose
+    /// element has not since been removed, with no intervening operation
+    /// that renumbers slots (see the [slots](Self#slots) section). Calling
+    /// this with a dirty slot is *[undefined behavior]* even if the
+    /// resulting reference is not used.
+    ///
+    /// [undefined behavior]: https://doc.rust-lang.org/reference/behavior-considered-undefined.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    ///
+    /// let mut list: XorList<u32> = (1..=3).collect();
+    /// let slot = list.push_back(4);
+    ///
+    /// // SAFETY: the element in `slot` has not been removed
+    /// unsafe { *list.slot_unchecked_mut(slot) += 10 };
+    /// assert_eq!(list.back(), Some(&14));
+    /// ```
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub unsafe fn slot_unchecked_mut(&mut self, at: usize) -> &mut T {
+        unsafe { self.nodes[at].value.as_mut().unwrap_unchecked() }
+    }
+
     /// Repacks the backing buffer so that the slots lie in traversal order,
     /// discarding the dirty slots left behind by removals.
     ///
@@ -1311,6 +1356,11 @@ impl<T> XorList<T> {
     /// [`push_front`](Self::push_front)). This operation should compute in
     /// *O*(*n*) time; check [`is_linear`](Self::is_linear) first to skip
     /// the rebuild when the buffer is already in order.
+    ///
+    /// Repacking renumbers every slot, so all outstanding
+    /// [slots](Self#slots) are invalidated: a saved slot resolves to
+    /// whichever element now occupies it, with no error. Do not call this
+    /// while slot handles are live.
     ///
     /// # Examples
     ///
@@ -1400,10 +1450,6 @@ impl<T> XorList<T> {
                 .all(|node| node.npx == usize::MAX ^ 1)
             && self.nodes[len - 1].npx == Self::compute_npx(len - 1, len - 2, usize::MAX)
     }
-
-    pub(crate) const fn compute_npx(curr: usize, prev: usize, next: usize) -> usize {
-        prev.wrapping_sub(curr) ^ next.wrapping_sub(curr)
-    }
 }
 
 impl<T> Default for XorList<T> {
@@ -1414,7 +1460,7 @@ impl<T> Default for XorList<T> {
 
 impl<T> Extend<T> for XorList<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        iter.into_iter().for_each(move |node| self.push_back(node));
+        iter.into_iter().for_each(move |node| { self.push_back(node); });
     }
 }
 
