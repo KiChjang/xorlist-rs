@@ -1349,11 +1349,7 @@ impl<T> XorList<T> {
         // every iteration, therefore current_node() must return a
         // reference to a different node
         while let Some(node) = unsafe { cursor.current_node() } {
-            let prev = if cursor.index == 0 {
-                usize::MAX
-            } else {
-                cursor.index - 1
-            };
+            let prev = cursor.index.wrapping_sub(1);
             let next = if cursor.index == len - 1 {
                 usize::MAX
             } else {
@@ -1466,6 +1462,67 @@ impl<T: fmt::Debug> fmt::Debug for XorList<T> {
                 entries.push_str(&format!(" <=> {entry:?}(slot #{})", iter.prev_head));
             }
             write!(f, "XorList({entries})")
+        }
+    }
+}
+
+impl<T, const N: usize> From<[T; N]> for XorList<T> {
+    /// Converts a `[T; N]` into a `XorList<T>`.
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    ///
+    /// let list1 = XorList::from([1, 2, 3, 4]);
+    /// let list2: XorList<_> = [1, 2, 3, 4].into();
+    /// assert_eq!(list1, list2);
+    /// ```
+    fn from(arr: [T; N]) -> Self {
+        Self::from_iter(arr)
+    }
+}
+
+impl<T> From<Vec<T>> for XorList<T> {
+    /// Converts a `Vec<T>` into a `XorList<T>`.
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    /// let list1 = XorList::from(vec![1, 2, 3, 4]);
+    /// let list2: XorList<_> = vec![1, 2, 3, 4].into();
+    /// assert_eq!(list1, list2);
+    /// ```
+    fn from(vec: Vec<T>) -> Self {
+        let len = vec.len();
+        if len == 0 {
+            return Self {
+                nodes: Vec::new(),
+                dirty: Vec::new(),
+                head: usize::MAX,
+                tail: usize::MAX,
+            };
+        }
+
+        let nodes = vec
+            .into_iter()
+            .enumerate()
+            .map(|(slot, value)| {
+                let prev = slot.wrapping_sub(1);
+                let next = if slot == len - 1 {
+                    usize::MAX
+                } else {
+                    slot + 1
+                };
+                let npx = Self::compute_npx(slot, prev, next);
+                Node {
+                    value: Some(value),
+                    npx,
+                }
+            })
+            .collect();
+        Self {
+            nodes,
+            dirty: Vec::new(),
+            head: 0,
+            tail: len - 1,
         }
     }
 }

@@ -29,7 +29,7 @@ A textbook XOR list stores `prev ^ next` in each node. `XorList` stores a
 *self-relative* variant: the node in slot `curr` keeps
 
 ```text
-npx = (prev - curr) ^ (next - curr)      // wrapping arithmetic
+npx = (prev.wrapping_sub(curr)) ^ (next.wrapping_sub(curr))
 ```
 
 Traversal recovers one neighbor from the other — arriving from `prev`, the
@@ -44,7 +44,7 @@ rewriting only the three links at the seam instead of fixing up every node.
 ### A `Vec` as the backing store
 
 All nodes live in slots of one backing `Vec`, and links name slot indices
-rather than addresses — pushes fill the `Vec` left to right while the XOR
+rather than addresses:  pushes fill the `Vec` left to right while the XOR
 links define the logical order on top of it. Removing a node from the middle
 poses a problem: shifting or swapping the remaining nodes would invalidate the
 links that name their slots. The opinionated answer here is to not move
@@ -101,7 +101,7 @@ On top of that:
 | `push_front` / `push_back` | amortized *O*(1) |
 | `pop_front` / `pop_back` | *O*(1) |
 | `front` / `back`, `len`, `is_empty` | *O*(1) |
-| `get(at)` | *O*(min(`at`, *n* − `at`)) |
+| `get(at)` / `get_mut(at)` | *O*(min(`at`, *n* − `at`)) |
 | `split_off(at)` | *O*(min(`at`, *n* − `at`)) |
 | `append` | 3 link rewrites + one bulk buffer move |
 | `compact` | *O*(*n*) |
@@ -116,8 +116,8 @@ On top of that:
   the dirty-slot design) and positional `insert(at, value)` / `remove(at)`.
 - [ ] **Capacity management** — `with_capacity`, `capacity`, `reserve`, and
   `shrink_to_fit` (compact + release excess capacity).
-- [ ] **More conversions** — `From<[T; N]>` and `From<Vec<T>>`; the latter can
-  build the whole list in one pass with position-derived links, since the
+- [x] **More conversions** — `From<[T; N]>` and `From<Vec<T>>`; the latter
+  builds the whole list in one pass with position-derived links, since the
   values are already in logical order.
 - [ ] **Indexing** — `Index` / `IndexMut` delegating to `get` / `get_mut`.
 - [ ] **`Send` / `Sync` for `IterMut` and `CursorMut`** — both hold a raw

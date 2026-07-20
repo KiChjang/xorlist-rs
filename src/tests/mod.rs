@@ -1,6 +1,7 @@
 mod append;
 mod basic;
 mod compact;
+mod conversion;
 mod cursor;
 mod index;
 mod iterator;

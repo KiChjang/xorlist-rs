@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `From<[T; N]>` and `From<Vec<T>>` conversions. The `Vec` conversion builds
+  the list in a single pass, deriving each node's links directly from its
+  position instead of pushing elements one at a time.
+
+### Changed
+
+- Simplified the previous-slot computation in `compact` (no behavior change).
+
 ## [0.1.1] - 2026-07-20
 
 ### Changed
