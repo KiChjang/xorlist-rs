@@ -1309,7 +1309,8 @@ impl<T> XorList<T> {
     /// when no slots are dirty, so this reliably relinearizes a scattered
     /// slot layout (such as one built with
     /// [`push_front`](Self::push_front)). This operation should compute in
-    /// *O*(*n*) time.
+    /// *O*(*n*) time; check [`is_linear`](Self::is_linear) first to skip
+    /// the rebuild when the buffer is already in order.
     ///
     /// # Examples
     ///
@@ -1327,9 +1328,6 @@ impl<T> XorList<T> {
     /// assert_eq!(list.front(), Some(&99));
     /// ```
     pub fn compact(&mut self) {
-        if self.dirty.is_empty() {
-            return;
-        }
         if self.head == usize::MAX {
             self.nodes.clear();
             self.dirty.clear();
@@ -1356,6 +1354,51 @@ impl<T> XorList<T> {
         self.dirty.clear();
         self.head = 0;
         self.tail = len - 1;
+    }
+
+    /// Returns `true` if the slots of the backing buffer already lie in
+    /// traversal order with no dirty slots — that is, if
+    /// [`compact`](Self::compact) would leave the buffer unchanged.
+    ///
+    /// This allows callers to skip the *O*(*n*) rebuild that `compact` performs
+    /// unconditionally:
+    ///
+    /// ```
+    /// use xorlist_rs::XorList;
+    ///
+    /// let mut list: XorList<u32> = (0..4).collect();
+    /// assert!(list.is_linear());
+    ///
+    /// list.pop_front();
+    /// assert!(!list.is_linear());
+    ///
+    /// if !list.is_linear() {
+    ///     list.compact();
+    /// }
+    /// assert!(list.is_linear());
+    /// ```
+    ///
+    /// This operation should compute in *O*(*n*) time, but performs no
+    /// allocation and only scans the link words.
+    #[must_use]
+    pub fn is_linear(&self) -> bool {
+        if !self.dirty.is_empty() {
+            return false;
+        }
+
+        let len = self.len();
+        if len == 0 {
+            return true;
+        }
+        if len == 1 {
+            return self.head == 0;
+        }
+
+        self.head == 0
+            && self.nodes[..(len - 1)]
+                .iter()
+                .all(|node| node.npx == usize::MAX ^ 1)
+            && self.nodes[len - 1].npx == Self::compute_npx(len - 1, len - 2, usize::MAX)
     }
 
     pub(crate) const fn compute_npx(curr: usize, prev: usize, next: usize) -> usize {

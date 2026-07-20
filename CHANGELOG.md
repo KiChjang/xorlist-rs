@@ -12,9 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `From<[T; N]>` and `From<Vec<T>>` conversions. The `Vec` conversion builds
   the list in a single pass, deriving each node's links directly from its
   position instead of pushing elements one at a time.
+- `XorList::is_linear`, an allocation-free check for whether the backing
+  buffer already lies in traversal order, letting callers skip `compact`'s
+  now-unconditional rebuild.
 
 ### Changed
 
+- `compact` now rebuilds the buffer unconditionally instead of returning
+  early when no slots are dirty, so it reliably relinearizes a scattered
+  slot layout. Calling it on an already-linear list is now *O*(*n*) rather
+  than free.
 - `CursorMut` now borrows the list directly instead of holding a raw node
   pointer, removing all `unsafe` code from the cursors and restoring the
   automatic `Send`/`Sync` implementations.
